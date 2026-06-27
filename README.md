@@ -4,21 +4,9 @@ A multi-agent travel planning system built with **LangGraph**, **FastAPI**, **Gr
 
 ## Architecture
 
-```
-                ┌──────────────────────────────────────────────┐
-                │              LangGraph StateGraph             │
-                │                                                │
-  POST /plan ──▶│  research ──▶ plan ──▶ human_review (interrupt)│
-                │                 ▲            │                 │
-                │                 │     ┌──────┼──────┐          │
-                │            reject│  approve modify  │          │
-                │                 │     │      │      │          │
-                │                 └─────┘   modify ───┘          │
-                │                     finalize ──▶ END           │
-                └──────────────────────────────────────────────┘
-                         state persisted via MemorySaver
-                         (thread_id == plan_id)
-```
+![Architecture Diagram](architecture_diagram.png)
+
+*State is persisted via MemorySaver (thread_id == plan_id)*
 
 **Orchestrator** — a LangGraph `StateGraph` that validates the request, routes between stages, drives the HITL interrupt, and emits the final plan. Workflow state is held in a checkpointer keyed by `plan_id`, so the graph can pause at the review step and resume later across separate HTTP requests.
 
