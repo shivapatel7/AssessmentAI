@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI Travel Planner</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --accent:#38bdf8; --text:#e2e8f0; --muted:#94a3b8; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--text); }
+  .wrap { max-width: 820px; margin: 0 auto; padding: 24px; }
+  h1 { color: var(--accent); margin-bottom: 4px; }
+  .sub { color: var(--muted); margin-top: 0; }
+  .card { background: var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:18px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  input, textarea, select { width:100%; padding:9px 11px; background:#0b1220; border:1px solid var(--line); border-radius:8px; color:var(--text); font-size:14px; }
+  .row { display:flex; gap:12px; }
+  .row > div { flex:1; }
+  button { background:var(--accent); color:#082f49; border:none; padding:10px 16px; border-radius:8px; font-weight:600; cursor:pointer; font-size:14px; }
+  button.ghost { background:transparent; color:var(--text); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+  .badge { display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; background:#0b1220; border:1px solid var(--line); color:var(--accent); }
+  .day { border-left:3px solid var(--accent); padding:6px 0 6px 12px; margin:10px 0; }
+  .day h4 { margin:0 0 4px; }
+  .muted { color:var(--muted); font-size:13px; }
+  pre { white-space:pre-wrap; word-break:break-word; background:#0b1220; padding:12px; border-radius:8px; font-size:12px; }
+  .hidden { display:none; }
+  .err { color:#fca5a5; font-size:13px; margin-top:8px; }
+  .pill { font-size:12px; color:var(--muted); }
+  ul { margin:6px 0; padding-left:18px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>AI Travel Planner</h1>
+  <p class="sub">Multi-agent itinerary builder with human-in-the-loop approval.</p>
+
+  <div class="card">
+    <label>API base URL</label>
+    <input id="apiBase" value="http://localhost:8000" />
+  </div>
+
+  <div class="card" id="formCard">
+    <h3>New trip request</h3>
+    <label>Destination</label>
+    <input id="destination" value="Lisbon, Portugal" />
+    <div class="row">
+      <div><label>Start date</label><input id="start_date" value="2026-09-10" /></div>
+      <div><label>End date</label><input id="end_date" value="2026-09-13" /></div>
+    </div>
+    <div class="row">
+      <div><label>Budget min</label><input id="budget_min" type="number" value="1200" /></div>
+      <div><label>Budget max</label><input id="budget_max" type="number" value="1800" /></div>
+      <div><label>Travelers</label><input id="travelers" type="number" value="2" /></div>
+    </div>
+    <label>Interests (comma separated)</label>
+    <input id="interests" value="history, food, photography" />
+    <div class="actions">
+      <button id="submitBtn" onclick="createPlan()">Plan my trip</button>
+    </div>
+    <div class="err" id="formErr"></div>
+  </div>
+
+  <div class="card hidden" id="statusCard">
+    <div>
+      <span class="badge" id="stageBadge">—</span>
+      <span class="pill" id="planIdLabel"></span>
+    </div>
+    <div id="planView"></div>
+  </div>
+
+  <div class="card hidden" id="reviewCard">
+    <h3>Your review</h3>
+    <div class="actions">
+      <button onclick="review('approve')">Approve</button>
+      <button class="ghost" onclick="toggle('rejectBox')">Reject with feedback</button>
+      <button class="ghost" onclick="toggle('modifyBox')">Modify a day</button>
+    </div>
+
+    <div id="rejectBox" class="hidden">
+      <label>What should change?</label>
+      <textarea id="rejectComments" rows="3" placeholder="e.g. Day 2 is too packed, add a food tour."></textarea>
+      <div class="actions"><button onclick="review('reject')">Submit feedback &amp; re-plan</button></div>
+    </div>
+
+    <div id="modifyBox" class="hidden">
+      <div class="row">
+        <div><label>Day number</label><input id="modDay" type="number" value="1" /></div>
+        <div><label>New activities (comma separated)</label><input id="modActivities" value="" /></div>
+      </div>
+      <div class="actions"><button onclick="submitModify()">Apply changes</button></div>
+    </div>
+    <div class="err" id="reviewErr"></div>
+  </div>
+
+  <div class="card hidden" id="finalCard">
+    <h3>Final plan ✅</h3>
+    <pre id="finalView"></pre>
+  </div>
+</div>
+
+<script>
+let currentId = null;
+
+function api() { return document.getElementById("apiBase").value.replace(/\/$/, ""); }
+function toggle(id) { document.getElementById(id).classList.toggle("hidden"); }
+function show(id) { document.getElementById(id).classList.remove("hidden"); }
+function hide(id) { document.getElementById(id).classList.add("hidden"); }
+function setBusy(b) { document.getElementById("submitBtn").disabled = b; }
+
+async function createPlan() {
+  document.getElementById("formErr").textContent = "";
+  setBusy(true);
+  const body = {
+    destination: val("destination"),
+    start_date: val("start_date"),
+    end_date: val("end_date"),
+    budget_min: Number(val("budget_min")),
+    budget_max: Number(val("budget_max")),
+    travelers: Number(val("travelers")),
+    interests: val("interests").split(",").map(s => s.trim()).filter(Boolean),
+  };
+  try {
+    const r = await fetch(api() + "/plan", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(JSON.stringify(data.detail || data));
+    currentId = data.plan_id;
+    renderStatus(data.stage, data.draft_plan);
+  } catch (e) {
+    document.getElementById("formErr").textContent = "Error: " + e.message;
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function review(action) {
+  document.getElementById("reviewErr").textContent = "";
+  const payload = { action };
+  if (action === "reject") payload.comments = val("rejectComments");
+  try {
+    const r = await fetch(api() + "/plan/" + currentId + "/review", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(JSON.stringify(data.detail || data));
+    if (data.stage === "finalized") {
+      renderFinal(data.final_plan);
+    } else {
+      renderStatus(data.stage, data.draft_plan);
+    }
+  } catch (e) {
+    document.getElementById("reviewErr").textContent = "Error: " + e.message;
+  }
+}
+
+function submitModify() {
+  const day = Number(val("modDay"));
+  const activities = val("modActivities").split(",").map(s => s.trim()).filter(Boolean);
+  const payload = { action: "modify", modifications: [{ day, activities }] };
+  fetch(api() + "/plan/" + currentId + "/review", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  }).then(r => r.json()).then(data => renderStatus(data.stage, data.draft_plan));
+}
+
+function renderStatus(stage, plan) {
+  show("statusCard"); show("reviewCard"); hide("finalCard");
+  document.getElementById("stageBadge").textContent = stage;
+  document.getElementById("planIdLabel").textContent = "plan id: " + currentId;
+  document.getElementById("planView").innerHTML = planHtml(plan);
+  document.getElementById("modActivities").value = "";
+}
+
+function renderFinal(plan) {
+  hide("reviewCard");
+  document.getElementById("stageBadge").textContent = "finalized";
+  show("finalCard");
+  document.getElementById("finalView").textContent = JSON.stringify(plan, null, 2);
+}
+
+function planHtml(plan) {
+  if (!plan) return "<p class='muted'>No draft yet.</p>";
+  let html = "";
+  if (plan.summary) html += "<p>" + esc(plan.summary) + "</p>";
+  (plan.days || []).forEach(d => {
+    html += "<div class='day'><h4>Day " + (d.day ?? "?") + ": " + esc(d.title || "") + "</h4>";
+    if (d.date) html += "<div class='muted'>" + esc(d.date) + "</div>";
+    if (d.activities) html += "<ul>" + d.activities.map(a => "<li>" + esc(a) + "</li>").join("") + "</ul>";
+    if (d.meals) html += "<div class='muted'>Meals: " + d.meals.map(esc).join(", ") + "</div>";
+    if (d.estimated_cost != null) html += "<div class='muted'>Est. cost: " + esc(String(d.estimated_cost)) + "</div>";
+    html += "</div>";
+  });
+  if (plan.budget_breakdown) html += "<p class='muted'>Budget: " + esc(JSON.stringify(plan.budget_breakdown)) + "</p>";
+  if (plan.packing_list) html += "<p class='muted'>Packing: " + plan.packing_list.map(esc).join(", ") + "</p>";
+  if (plan.notes) html += "<p class='muted'>" + esc(plan.notes) + "</p>";
+  return html;
+}
+
+function val(id) { return document.getElementById(id).value; }
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+</script>
+</body>
+</html>
